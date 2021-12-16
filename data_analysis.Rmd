@@ -1,0 +1,189 @@
+---
+title: "Untitled"
+author: "Alexandra Norris"
+date: "12/13/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(haven)
+library(fuzzyjoin)
+library(lubridate)
+library(usmap)
+```
+
+```{r}
+
+# # load in data from regions and then merge it together
+# 
+# central_atlantic <- read_csv("eia_data/Weekly_Central_Atlantic_(PADD_1B)_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+#   mutate(region = "central_atlantic")
+# 
+# east_coast <- read_csv("eia_data/Weekly_East_Coast_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+#   mutate(region = "east_coast")
+# 
+# gulf_coast <- read_csv("eia_data/Weekly_Gulf_Coast_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+#   mutate(region = "gulf_coast")
+# 
+# low_atlantic <- read_csv("eia_data/Weekly_Lower_Atlantic_(PADD_1C)_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+#   mutate(region = "low_atlantic")
+# 
+# midwest <- read_csv("eia_data/Weekly_Midwest_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+#   mutate(region = "midwest")
+# 
+# rockies <- read_csv("eia_data/Weekly_Rocky_Mountain_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+#   mutate(region = "rocky_mountains") 
+# 
+# total_us <- read_csv("eia_data/Weekly_U.S._All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+#   mutate(region = "usa") 
+# 
+# wc_no_cal <- read_csv("eia_data/Weekly_West_Coast_(PADD_5)_Except_California_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+#   mutate(region = "wc_no_cal")
+# 
+# wc <- read_csv("eia_data/Weekly_West_Coast_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+#   mutate(region = "west_coast")
+# 
+# # merge together data and change "/" to "-" so I can make it a date
+# 
+# gas <- rbind(central_atlantic, east_coast, gulf_coast, low_atlantic, midwest, rockies, total_us, wc_no_cal, wc)
+# 
+# # add states 
+
+```
+
+```{r}
+
+# read in state gas price data
+
+ca <- read_csv("eia_data_states/Weekly_California_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+   mutate(state = "CA")
+
+co <- read_csv("eia_data_states/Weekly_Colorado_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+   mutate(state = "CO")
+
+fl <- read_csv("eia_data_states/Weekly_Florida_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+   mutate(state = "FL")
+
+ma <- read_csv("eia_data_states/Weekly_Massachusetts_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+   mutate(state = "MA")
+
+mn <- read_csv("eia_data_states/Weekly_Minnesota_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+   mutate(state = "MN")
+
+ny <- read_csv("eia_data_states/Weekly_New_York_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+   mutate(state = "NY")
+
+oh <- read_csv("eia_data_states/Weekly_Ohio_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+   mutate(state = "OH")
+
+tx <- read_csv("eia_data_states/Weekly_Texas_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+   mutate(state = "TX")
+
+wa <- read_csv("eia_data_states/Weekly_Washington_All_Grades_All_Formulations_Retail_Gasoline_Prices.csv") %>%
+   mutate(state = "WA")
+
+# merge together states
+gas <- rbind(ca,co,fl,ma,mn,ny,oh,tx,wa) %>%
+  rename(date = week)
+
+```
+
+```{r}
+
+# because the gas data is weekly, I need to expand it on the day level so it can be merged with disaster data
+
+
+```
+
+
+
+```{r}
+
+# download FEMA data that denotes disasters and filter for relevant data
+# have to do ohio seperagely because gas data starts in 2003 not 2000 like the rest - makes it so the nearest merge works better
+
+ohio <- read_csv("DisasterDeclarationsSummaries.csv") %>%
+  filter(state == "OH") %>%
+  mutate(date = as.Date(declarationDate, format = "%Y-%m-%d")) %>%
+  filter(date >= '2003-01-01') %>%
+  select(disasterNumber, state, declarationDate, date, incidentType)
+
+rest <- read_csv("DisasterDeclarationsSummaries.csv") %>%
+  filter(state %in% c("CA","CO","FL","MA","MN","NY","TX","WA")) %>%
+  mutate(date = as.Date(declarationDate, format = "%Y-%m-%d")) %>%
+  filter(date >= '2000-01-01') %>%
+  select(disasterNumber, state, declarationDate, date, incidentType)
+
+disaster <- rbind(rest, ohio)
+
+```
+
+```{r}
+
+# used function from internet to do nearest neighbor joining
+
+match_by_group_date <- function(df1, df2, grp, datecol) {
+  
+  grp1 <- df1 %>% pull({{grp}}) %>% unique()
+  grp2 <- df2 %>% pull({{grp}}) %>% unique()
+  
+  li <-
+  lapply(intersect(grp1, grp2), function(tt) {
+    d1 <- filter(df1, {{grp}}== tt)
+    d2 <- filter(df2, {{grp}}==tt) %>% mutate(indices = 1:n())
+    d2_date <- d2 %>% pull({{datecol}}) %>% as.POSIXct()
+    print(d2_date)
+    d1 <- mutate(d1, indices = map_dbl({{datecol}}, function(d) which.min(abs(d2_date - as.POSIXct(d)))))
+    
+    left_join(d1,d2, by=c(quo_name(enquo(grp)), "indices"))
+  })
+  
+  # bind rows
+  return(bind_rows(li))
+}
+
+
+joined_data <- match_by_group_date(gas, disaster, state, date)
+
+```
+
+```{r}
+
+# rename columns so that I know what's what with the dates
+
+data <- joined_data %>%
+  rename(gas_date = date.x) %>%
+  rename(disaster_date = date.y) %>%
+   # create a match to show day of disaster
+  mutate(dis_date = ifelse(gas_date==disaster_date, as.Date(disaster_date),NA)) %>%
+  mutate(dis_date = as.Date(dis_date, origin = "1970-01-01")) %>%
+  select(disasterNumber, state, gas_date, declarationDate, incidentType, price, dis_date) %>%
+  rename(disaster_date = dis_date)
+```
+
+```{r}
+# download price gouging law data. From: https://www.findlaw.com/consumer/consumer-transactions/price-gouging-laws-by-state.html
+
+gouge <- read_csv("price_gouguing_laws - Sheet1.csv") %>%
+  select(state, law_exists, threshold_exists, threshold)
+```
+
+
+```{r}
+library("imputeTS")
+map_gouge <- gouge %>%
+  mutate(value = as.factor(threshold_exists + law_exists))
+
+map_gouge <- na.replace(map_gouge, 0)
+
+map <- plot_usmap(data = map_gouge, values = "value", color = "black") + 
+  theme(legend.position = "right") +
+  scale_fill_manual(values = c("firebrick","steelblue"), labels = c("Vague Law","Law with Threshold","No Law"), name = "Type of Price Gouging Law" )
+    
+ggsave("law.map.png")
+
+```
+
+
