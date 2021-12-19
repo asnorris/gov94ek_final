@@ -92,15 +92,6 @@ gas <- rbind(ca,co,fl,ma,mn,ny,oh,tx,wa) %>%
 
 ```{r}
 
-# because the gas data is weekly, I need to expand it on the day level so it can be merged with disaster data
-
-
-```
-
-
-
-```{r}
-
 # download FEMA data that denotes disasters and filter for relevant data
 # have to do ohio seperagely because gas data starts in 2003 not 2000 like the rest - makes it so the nearest merge works better
 
@@ -120,7 +111,7 @@ disaster <- rbind(rest, ohio)
 
 ```
 
-```{r}
+```{r, message=FALSE}
 
 # used function from internet to do nearest neighbor joining
 
@@ -149,41 +140,155 @@ joined_data <- match_by_group_date(gas, disaster, state, date)
 
 ```
 
-```{r}
-
+```{r warning=FALSE}
 # rename columns so that I know what's what with the dates
 
 data <- joined_data %>%
   rename(gas_date = date.x) %>%
   rename(disaster_date = date.y) %>%
-   # create a match to show day of disaster
-  mutate(dis_date = ifelse(gas_date==disaster_date, as.Date(disaster_date),NA)) %>%
-  mutate(dis_date = as.Date(dis_date, origin = "1970-01-01")) %>%
-  select(disasterNumber, state, gas_date, declarationDate, incidentType, price, dis_date) %>%
-  rename(disaster_date = dis_date)
+  filter(gas_date < '2021-10-26') %>%
+  group_by(disasterNumber) %>%
+  # mutate(pre = ifelse(gas_date < disaster_date,1, ifelse(gas_date==disaster_date,1, 0))) %>%
+  mutate(dist = gas_date - disaster_date) %>%
+  mutate(pre = ifelse(dist <= 3,1,0)) %>%
+  filter(between(dist, -11, 17)) %>%
+  mutate(time = ifelse(pre == 1, "pre_dis", "post_dis")) %>%
+  group_by(state, disasterNumber, pre) %>%
+  mutate(avj_price = mean(price)) %>%
+  ungroup() %>%
+  select(state, disasterNumber, avj_price, time, incidentType) %>%
+  distinct() %>%
+  group_by(state, disasterNumber) %>%
+  pivot_wider(names_from = time, values_from = avj_price) %>%
+  na.omit()
+
 ```
+
+
+
 
 ```{r}
 # download price gouging law data. From: https://www.findlaw.com/consumer/consumer-transactions/price-gouging-laws-by-state.html
+# also replace na values with 0 for threshold exists so that regression works
 
 gouge <- read_csv("price_gouguing_laws - Sheet1.csv") %>%
   select(state, law_exists, threshold_exists, threshold)
+
+sum(gouge$threshold_exists, na.rm = TRUE)
 ```
 
 
 ```{r}
+
+# create a map that displays the variation in laws across the country
+
 library("imputeTS")
 map_gouge <- gouge %>%
   mutate(value = as.factor(threshold_exists + law_exists))
-
+# 
 map_gouge <- na.replace(map_gouge, 0)
 
 map <- plot_usmap(data = map_gouge, values = "value", color = "black") + 
   theme(legend.position = "right") +
-  scale_fill_manual(values = c("firebrick","steelblue"), labels = c("Vague Law","Law with Threshold","No Law"), name = "Type of Price Gouging Law" )
+  scale_fill_manual(values = c("firebrick","steelblue"), labels = c("Vague Law","Law with Threshold","No Law"), name = "Type of Price Gouging Law")
     
-ggsave("law.map.png")
+ggsave("final_paper/law_map.pdf", height = 3.5, width = 7)
+map
+```
+```{r}
 
+# merge together law data with gas/disaster data
+
+data <- left_join(data, gouge) %>%
+  mutate(price_change = post_dis - pre_dis)
+
+```
+
+```{r}
+
+# find most prevalent incidents
+data %>%
+  group_by(incidentType) %>%
+  mutate(count = n()) %>%
+  select(incidentType, count) %>%
+  distinct() %>%
+  arrange(desc(count))
+# top 5 include fire, severe storms, hurricanes, flood, and snow
+
+# attempt at a regression
+
+mod1 <- lm(price_change ~ law_exists, data = data)
+
+mod2 <- lm(price_change ~ threshold_exists, data = data)
+
+mod3 <- lm(price_change ~ law_exists + incidentType, data = data)
+
+cat(stargazer::stargazer(mod1,mod2,mod3, ci = TRUE, omit = c("incidentTypeCoastal Storm", "incidentTypeDam/Levee Break", "incidentTypeEarthquake", "incidentTypeFreezing",
+                                                                           "incidentTypeMud/Landslide", "incidentTypeOther", "incidentTypeSevere Ice Storm", "incidentTypeTornado",
+                                                                           "incidentTypeTsunami"),
+                     covariate.labels = c("Law Exists","Gouging Threshold Exists","Fire","Flood","Hurricane","Severe Storm(s)","Snow", "Constant"), dep.var.labels = "Post-Disaster Price Change"),
+                     file="final_paper/tab2.tex", sep="\n")
+
+# limitation - does not observe the trends before
+
+```
+
+```{r}
+
+
+require(gt)
+
+num <- data %>%
+  group_by(law_exists, threshold_exists) %>%
+  mutate(avj_change = mean(price_change)) %>%
+  select(law_exists, threshold_exists, avj_change) %>%
+  distinct() %>%
+  ungroup() %>%
+  select(avj_change)
+
+type <- c("Law with Threshold","No Law","Law Without Threshold (vague)")
+
+dif_mean <- data_frame(type, num)
+
+# create table
+dif_mean %>%
+  gt() %>%
+  cols_label(type = "", avj_change = "Average Price Change") %>%
+  gtsave("final_paper/tab1.tex")
+
+
+```
+
+```{r}
+
+# use different data to do the dif in dif analysis
+
+dif_dat <- joined_data %>%
+  rename(gas_date = date.x) %>%
+  rename(disaster_date = date.y) %>%
+  filter(gas_date < '2021-10-26') %>%
+  group_by(disasterNumber) %>%
+  mutate(pre = ifelse(gas_date < disaster_date,1, ifelse(gas_date==disaster_date,1, 0))) %>%
+  mutate(dist = gas_date - disaster_date) %>%
+  # mutate(adj_dist = dist - 6)
+  filter(between(dist, -21, 21)) %>%
+  mutate(distance = as.numeric(dist)) %>%
+  mutate(time = ifelse(pre == 1, "pre_dis", "post_dis"))
+
+dif_dat <- merge(dif_dat, gouge)
+
+dif_dat %>%
+  # group_by(law_exists, )
+  mutate(law_exists = as.factor(law_exists)) %>%
+  ggplot(aes(x = distance, y = price, group = law_exists, color = law_exists)) +
+  # geom_point() +
+  stat_smooth(method = "loess", formula = y ~ x, size = 1) +
+  theme_classic() +
+  geom_vline(xintercept=c(0,7), linetype=c("dashed","dotted"), color = c("black", "red")) +
+  labs(x = "Distance (days) From Disaster", y = "Gasoline Price", color = "") +
+  scale_color_manual(values = c("firebrick","steelblue"), labels = c("No Law", "Law Prohibiting Gouging"))
+
+ggsave("final_paper/fig2.pdf",  height =3.5, width = 7)
 ```
 
 
